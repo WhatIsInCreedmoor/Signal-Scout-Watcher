@@ -1,4 +1,6 @@
 # Encrypted Firmware Instructions
+**This project is compatible with full flash encryption. It has been tested and confirmed working. This specific documentation is lacking and should be used as hints until the fully updated.**
+
 The assumption throughout this flashing guide is that the device's MAC Address is used to identify the device. It is used to identify the device in Signal Scout and the scripts assume you're using a file with the mac address. As far as this project is concerned, the device-secrets file can be named any name that you desire. 
 
 The NVS partition is used to store secrets so that secrets don't need to be included in the firmware. The reason being is that OTA files can't be encrypted before being sent OTA. If someone accesses your OTA firmware, they'll have the ability to determine your API keys and WiFi credentials. These are moved to NVS, which is not part of the OTA files, so that they can't be sniffed mid flight. The tradeoff is that you must physically flash the device again to update API keys or WiFi credentials.

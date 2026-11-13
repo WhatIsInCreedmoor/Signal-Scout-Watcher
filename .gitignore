@@ -1,0 +1,13 @@
+build/
+sdkconfig
+sdkconfig.old
+*.swp
+env/
+*.html
+environment_secrets.sh
+*.pem
+*device_secrets.csv
+*.bin
+
+!device-secrets/*.example
+!nvs-partitions/*.example

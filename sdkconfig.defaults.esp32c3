@@ -1,0 +1,2 @@
+# Bluetooth duplicate handling
+CONFIG_BT_CTRL_SCAN_DUPL_TYPE_DATA_DEVICE=y

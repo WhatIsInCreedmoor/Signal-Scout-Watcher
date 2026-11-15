@@ -79,7 +79,7 @@ jobs:
           ref: ${{ needs.prepare.outputs.ref }}
           fetch-depth: 0
 
-      - name: Build & Package (${{ matrix.target }})
+      - name: Build & Merge Firmware (${{ matrix.target }})
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
@@ -88,81 +88,19 @@ jobs:
           set -eo pipefail
           source "${IDF_PATH}/export.sh"
           set -u
-          export COMMIT_SHA="$(git rev-parse HEAD)"
           idf.py set-target "${TARGET}"
           idf.py build
           idf.py size
-          python3 - <<'PY'
-          import json, os, shutil, struct, zipfile
+          mkdir -p "${GITHUB_WORKSPACE}/dist"
+          VER="${RELEASE_TAG#[vV]}"
+          OUT_BIN="${GITHUB_WORKSPACE}/dist/${VER}-${TARGET}.bin"
+          (cd build && python -m esptool --chip "${TARGET}" merge_bin -o "${OUT_BIN}" @flash_args)
 
-          target = os.environ["TARGET"]
-          tag = os.environ["RELEASE_TAG"]
-          commit = os.environ["COMMIT_SHA"]
-          families = {"esp32c3": "ESP32-C3", "esp32c5": "ESP32-C5", "esp32c6": "ESP32-C6", "esp32s3": "ESP32-S3"}
-
-          with open("build/flasher_args.json", "r", encoding="utf-8") as f:
-              args = json.load(f)
-
-          out_dir = f"dist/raw/{target}"
-          os.makedirs(out_dir, exist_ok=True)
-
-          parts = []
-          app_file = os.path.basename(args.get("app", {}).get("file", ""))
-          app_size = 0
-          for offset_hex, rel_path in sorted(args["flash_files"].items(), key=lambda kv: int(kv[0], 16)):
-              src = os.path.join("build", rel_path)
-              name = os.path.basename(rel_path)
-              dst = os.path.join(out_dir, name)
-              shutil.copy2(src, dst)
-              size = os.path.getsize(dst)
-              offset = int(offset_hex, 16)
-              if name == app_file:
-                  app_size = size
-              parts.append({"path": f"{target}/{name}", "file": name, "offset": offset, "offset_hex": hex(offset), "size": size})
-
-          nvs = None
-          ptable_rel = args.get("partition-table", {}).get("file", "")
-          ptable_path = os.path.join("build", ptable_rel) if ptable_rel else ""
-          if ptable_path and os.path.exists(ptable_path):
-              raw = open(ptable_path, "rb").read()
-              for pos in range(0, len(raw) - 31, 32):
-                  magic, ptype, psub, offset, size, label_raw, _ = struct.unpack("<HBBII16sI", raw[pos:pos + 32])
-                  if magic != 0x50AA:
-                      break
-                  label = label_raw.split(b"\x00", 1)[0].decode("utf-8", errors="ignore")
-                  if (ptype == 1 and psub == 2) or label == "nvs":
-                      nvs = {"offset": offset, "offset_hex": hex(offset), "size": size, "size_hex": hex(size)}
-                      break
-
-          meta = {
-              "target": target,
-              "chipFamily": families.get(target, target.upper()),
-              "tag": tag,
-              "commit": commit,
-              "flash_settings": args.get("flash_settings", {}),
-              "nvs": nvs,
-              "app_file": app_file,
-              "app_size": app_size,
-              "parts": parts,
-          }
-          with open(os.path.join(out_dir, "meta.json"), "w", encoding="utf-8") as f:
-              json.dump(meta, f, indent=2)
-              f.write("\n")
-
-          os.makedirs("dist/assets", exist_ok=True)
-          zip_path = f"dist/assets/signal-scout-watcher-{tag}-{target}.zip"
-          with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-              for fname in sorted(os.listdir(out_dir)):
-                  zf.write(os.path.join(out_dir, fname), arcname=fname)
-          PY
-
-      - name: Upload Target Artifact (${{ matrix.target }})
+      - name: Upload Merged Binary (${{ matrix.target }})
         uses: actions/upload-artifact@v4
         with:
           name: firmware-${{ matrix.target }}
-          path: |
-            dist/raw/${{ matrix.target }}/meta.json
-            dist/assets/signal-scout-watcher-${{ needs.prepare.outputs.tag }}-${{ matrix.target }}.zip
+          path: dist/*.bin
           if-no-files-found: error
 
   release:
@@ -173,59 +111,27 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download All Target Artifacts
+      - name: Download All Target Binaries
         uses: actions/download-artifact@v4
         with:
           pattern: firmware-*
-          path: staging
-
-      - name: Build Release Metadata Index
-        env:
-          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
-          COMMIT_SHA: ${{ github.sha }}
-        run: |
-          mkdir -p release-assets
-          find staging -name 'signal-scout-watcher-*.zip' -exec cp {} release-assets/ \;
-          python3 - <<'PY'
-          import glob, json, os
-
-          tag = os.environ["RELEASE_TAG"]
-          by_target = {}
-          for path in glob.glob("staging/**/meta.json", recursive=True):
-              m = json.load(open(path, "r", encoding="utf-8"))
-              by_target[m["target"]] = m
-
-          commit = next((m.get("commit", "") for m in by_target.values() if m.get("commit")), os.environ["COMMIT_SHA"])
-          order = ["esp32c3", "esp32c5", "esp32c6", "esp32s3"]
-          targets = {}
-          for t in [x for x in order if x in by_target] + sorted(x for x in by_target if x not in order):
-              m = by_target[t]
-              targets[t] = {
-                  "chipFamily": m["chipFamily"],
-                  "asset": f"signal-scout-watcher-{tag}-{t}.zip",
-                  "app_file": m.get("app_file", ""),
-                  "app_size": m.get("app_size", 0),
-                  "flash_settings": m.get("flash_settings", {}),
-                  "nvs": m.get("nvs"),
-                  "parts": m["parts"],
-              }
-
-          with open("release-assets/release-metadata.json", "w", encoding="utf-8") as f:
-              json.dump({"name": "Signal Scout Watcher", "tag": tag, "commit": commit, "targets": targets}, f, indent=2)
-              f.write("\n")
-          PY
-          ls -lh release-assets/
+          path: release-assets
+          merge-multiple: true
 
       - name: Create or Update GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
+          ls -lh release-assets/
           TAG="${{ needs.prepare.outputs.tag }}"
-          if gh release view "${TAG}" >/dev/null 2>&1; then
-            gh release upload "${TAG}" release-assets/* --clobber
-            gh release edit "${TAG}" --latest
+          if gh release view "${TAG}" --repo "${GH_REPO}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" release-assets/*.bin --repo "${GH_REPO}" --clobber
+            gh release edit "${TAG}" --repo "${GH_REPO}" --latest
           else
-            gh release create "${TAG}" release-assets/* \
+            gh release create "${TAG}" release-assets/*.bin \
+              --repo "${GH_REPO}" \
+              --target "${{ needs.prepare.outputs.ref }}" \
               --title "Signal Scout Watcher ${TAG}" \
               --latest \
               --generate-notes

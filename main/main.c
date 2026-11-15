@@ -3,6 +3,7 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
+#include <errno.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -19,6 +20,7 @@
 #include "esp_mac.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
+#include "provisioning.h"
 
 // OTA Enable
 #include "esp_https_ota.h"
@@ -307,7 +309,7 @@ static void fetch_definitions_from_server() {
     ESP_LOGI("DEFS", "Checking for updated definitions...");
 
     esp_http_client_config_t config = {
-        .url = API_DEFINITIONS_ENDPOINT,
+        .url = get_definitions_endpoint(),
         .event_handler = _http_event_handler,
         .crt_bundle_attach = esp_crt_bundle_attach
     };
@@ -343,22 +345,22 @@ static void fetch_definitions_from_server() {
             FILE* f = fopen(STORAGE_BASE_PATH "/defs.json", "w");
             if (f) {
                 if (fputs(download_buffer, f) == EOF) {
-                    ESP_LOGE("DEFS", "Failed to write defs.json");
+                    ESP_LOGE("DEFS", "Failed to write defs.json (errno %d: %s)", errno, strerror(errno));
                 }
                 fclose(f);
             } else {
-                ESP_LOGE("DEFS", "Failed to open defs.json for writing");
+                ESP_LOGE("DEFS", "Failed to open defs.json for writing (errno %d: %s)", errno, strerror(errno));
             }
 
             if (incoming_etag[0] != '\0') {
                 FILE* fe = fopen(STORAGE_BASE_PATH "/etag.txt", "w");
                 if (fe) {
                     if (fputs(incoming_etag, fe) == EOF) {
-                        ESP_LOGE("DEFS", "Failed to write etag.txt");
+                        ESP_LOGE("DEFS", "Failed to write etag.txt (errno %d: %s)", errno, strerror(errno));
                     }
                     fclose(fe);
                 } else {
-                    ESP_LOGE("DEFS", "Failed to open etag.txt for writing");
+                    ESP_LOGE("DEFS", "Failed to open etag.txt for writing (errno %d: %s)", errno, strerror(errno));
                 }
             }
             parse_and_apply_definitions(download_buffer);
@@ -560,7 +562,7 @@ void upload_task(void *pvParameters) {
             if (connect_to_known_wifi()) {
                 for (int i = 0; i < current_count; i++) {
                     esp_http_client_config_t config = {
-                        .url = API_ENDPOINT,
+                        .url = get_api_endpoint(),
                         .method = HTTP_METHOD_POST,
                         .crt_bundle_attach = esp_crt_bundle_attach
                     };
@@ -579,7 +581,13 @@ void upload_task(void *pvParameters) {
                         upload_queue[i].network_type, upload_queue[i].channel, upload_queue[i].rssi, upload_queue[i].name);
 
                     esp_http_client_set_post_field(client, post_data, strlen(post_data));
-                    esp_http_client_perform(client);
+                    esp_err_t err = esp_http_client_perform(client);
+                    if (err == ESP_OK) {
+                        int status = esp_http_client_get_status_code(client);
+                        if (status == 200 && !is_wifi_verified()) {
+                            mark_wifi_verified();
+                        }
+                    }
                     esp_http_client_cleanup(client);
                 }
                 esp_wifi_disconnect();
@@ -605,12 +613,20 @@ esp_err_t _ota_http_event_handler(esp_http_client_event_t *evt) {
 }
 
 void heartbeat_task(void *pvParameters) {
+    int unverified_attempts = 0;
+
     while (1) {
-        vTaskDelay(pdMS_TO_TICKS(5000));
+        if (!is_wifi_verified()) {
+            vTaskDelay(pdMS_TO_TICKS(3000));
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(5000));
+        }
         while (is_uploading) vTaskDelay(pdMS_TO_TICKS(1000));
 
         is_uploading = true;
         esp_wifi_set_promiscuous(false);
+
+        bool attempt_success = false;
 
         if (connect_to_known_wifi()) {
             uint8_t mac[6];
@@ -624,7 +640,7 @@ void heartbeat_task(void *pvParameters) {
             if (download_buffer) { free(download_buffer); download_buffer = NULL; }
 
             esp_http_client_config_t config = {
-                .url = API_HEARTBEAT_ENDPOINT,
+                .url = get_heartbeat_endpoint(),
                 .method = HTTP_METHOD_POST,
                 .crt_bundle_attach = esp_crt_bundle_attach,
                 .event_handler = _http_event_handler,
@@ -650,21 +666,29 @@ void heartbeat_task(void *pvParameters) {
 
                 if (err == ESP_OK) {
                     int status = esp_http_client_get_status_code(client);
-                    if (status == 200 && download_buffer != NULL) {
-                        download_buffer[download_len] = '\0';
-
-                        cJSON *root = cJSON_Parse(download_buffer);
-                        if (root) {
-                            cJSON *ota_url = cJSON_GetObjectItem(root, "ota_url");
-                            if (ota_url && ota_url->valuestring) {
-                                strncpy(ota_url_buffer, ota_url->valuestring, sizeof(ota_url_buffer) - 1);
-                                update_needed = true;
-                            }
-                            cJSON_Delete(root);
+                    if (status == 200) {
+                        attempt_success = true;
+                        if (!is_wifi_verified()) {
+                            mark_wifi_verified();
                         }
+                        if (download_buffer != NULL) {
+                            download_buffer[download_len] = '\0';
+
+                            cJSON *root = cJSON_Parse(download_buffer);
+                            if (root) {
+                                cJSON *ota_url = cJSON_GetObjectItem(root, "ota_url");
+                                if (ota_url && ota_url->valuestring) {
+                                    strncpy(ota_url_buffer, ota_url->valuestring, sizeof(ota_url_buffer) - 1);
+                                    update_needed = true;
+                                }
+                                cJSON_Delete(root);
+                            }
+                        }
+                    } else {
+                        ESP_LOGE("HEARTBEAT", "Server returned HTTP %d (Verify API key or server configuration)", status);
                     }
                 } else {
-                    ESP_LOGE("HEARTBEAT", "HTTP POST request failed: %s", esp_err_to_name(err));
+                    ESP_LOGE("HEARTBEAT", "HTTP POST request failed: %s (Verify server URL)", esp_err_to_name(err));
                 }
 
                 // FULLY CLEAN UP THE HTTP CLIENT AND BUFFERS BEFORE STARTING OTA
@@ -711,11 +735,30 @@ void heartbeat_task(void *pvParameters) {
             fetch_definitions_from_server();
 
             esp_wifi_disconnect();
+        } else {
+            ESP_LOGW("HEARTBEAT", "Could not connect to any configured Wi-Fi network.");
         }
 
         esp_wifi_set_promiscuous(true);
         is_uploading = false;
-        vTaskDelay(pdMS_TO_TICKS(1800000)); // 30 minutes
+
+        if (attempt_success) {
+            unverified_attempts = 0;
+            vTaskDelay(pdMS_TO_TICKS(1800000)); // 30 minutes
+        } else {
+            if (!is_wifi_verified()) {
+                unverified_attempts++;
+                ESP_LOGW("HEARTBEAT", "Initial provisioning attempt %d/3 failed (Wi-Fi, URL, or API key)", unverified_attempts);
+                if (unverified_attempts >= 3) {
+                    ESP_LOGE("HEARTBEAT", "Failed 3 initial attempts after provisioning. Returning to AP mode...");
+                    reset_to_provisioning_mode();
+                }
+                vTaskDelay(pdMS_TO_TICKS(5000)); // Retry shortly on unverified boot
+            } else {
+                // Device was already verified before: do NOT reset, wait normal interval
+                vTaskDelay(pdMS_TO_TICKS(1800000)); // 30 minutes
+            }
+        }
     }
 }
 
@@ -779,6 +822,16 @@ void app_main(void) {
         ESP_ERROR_CHECK(err);
     }
 
+    // Check if provisioning is needed (missing credentials)
+    if (!is_device_provisioned()) {
+        ESP_LOGW("MAIN", "Device is unprovisioned.");
+        ESP_LOGI("MAIN", "Starting SoftAP Provisioning Portal...");
+        ESP_ERROR_CHECK(esp_netif_init());
+        ESP_ERROR_CHECK(esp_event_loop_create_default());
+        start_provisioning_portal();
+        return;
+    }
+
     // Pull API Key from NVS
     nvs_handle_t nvs_handle;
     err = nvs_open("auth", NVS_READONLY, &nvs_handle);
@@ -799,7 +852,7 @@ void app_main(void) {
     // Mount FAT filesystem with wear levelling
     const esp_vfs_fat_mount_config_t mount_config = {
         .format_if_mount_failed = true,
-        .max_files = 2,
+        .max_files = 3,
         .allocation_unit_size = CONFIG_WL_SECTOR_SIZE,
     };
     err = esp_vfs_fat_spiflash_mount_rw_wl(STORAGE_BASE_PATH, STORAGE_PARTITION_LABEL, &mount_config, &s_wl_handle);

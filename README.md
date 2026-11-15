@@ -18,21 +18,17 @@ Edge sensor firmware for the [Signal Scout](https://github.com/WhatIsInCreedmoor
 
 ## Quick Start
 
-1. **Configure Server Endpoints:**
-   Copy the example environment secrets file and fill in your Signal Scout server URLs:
-   ```bash
-   cp environment_secrets.sh.example environment_secrets.sh
-   # Edit API_ENDPOINT, API_HEARTBEAT_ENDPOINT, and API_DEFINITIONS_ENDPOINT
-   source environment_secrets.sh
-   ```
+### 1. Build and Flash (Wireless SoftAP - Recommended)
+No environment variables, secrets files, or CSVs needed before flashing:
+```bash
+idf.py set-target <TARGET>   # esp32c3, esp32c5, esp32c6, or esp32s3
+idf.py build flash monitor -p /dev/ttyACM0
+```
+Connect to the `signal-scout-<mac>` Wi-Fi hotspot (Password: `signalscout`) to enter Wi-Fi credentials, API key, and server URL through the captive portal. See the **[Wireless SoftAP Provisioning Guide](documentation/ap_provisioning_instructions.md)** for details.
 
-2. **Choose Your Flashing Method:**
-   * **[Standard / Unencrypted Flashing Guide](documentation/flashing_instructions.md)** (Easiest)
-
-     Step-by-step instructions to create a device in Signal Scout, build the firmware, and flash the device secrets using `scripts/flash_nvs.sh` (works across C3, C5, C6, and S3).
-   * **[Hardware Encrypted Flashing Guide](documentation/encryption_instructions.md)**  (Best if there is any possibility of the device being in a non controlled environment)
-
-     Production provisioning workflow covering eFuse key burning (`BLOCK_KEY0`), per-device NVS key generation, pre-encrypted flashing, and partition offsets.
+### 2. Alternative Flashing Methods
+* **[Environment Values / NVS Flashing Guide](documentation/flashing_instructions.md)** — Pre-provision secrets and server URLs via USB using `environment_secrets.sh` and `scripts/flash_nvs.sh`.
+* **[Hardware Encrypted Flashing Guide](documentation/encryption_instructions.md)** — Production provisioning covering eFuse key burning (`BLOCK_KEY0`), per-device NVS key generation, and pre-encrypted flashing.
 
 ## Project Structure
 
@@ -42,8 +38,9 @@ Edge sensor firmware for the [Signal Scout](https://github.com/WhatIsInCreedmoor
 ├── environment_secrets.sh      # Server API endpoints (git-ignored)
 ├── device-secrets/             # Per-device CSV secrets: <MAC>.device_secrets.csv
 ├── documentation/
-│   ├── flashing_instructions.md   # Standard unencrypted flashing guide
-│   └── encryption_instructions.md # Hardware encryption & eFuse provisioning guide
+│   ├── ap_provisioning_instructions.md # Wireless SoftAP captive portal guide
+│   ├── flashing_instructions.md        # Standard unencrypted USB NVS guide
+│   └── encryption_instructions.md      # Hardware encryption & eFuse provisioning guide
 ├── main/
 │   ├── CMakeLists.txt          # Main component build config
 │   └── main.c                  # Core sniffer, HTTP client, and state machine
@@ -53,3 +50,4 @@ Edge sensor firmware for the [Signal Scout](https://github.com/WhatIsInCreedmoor
 │   └── flash_encrypted_c3.sh   # Offline pre-encryption & flash script for ESP32-C3
 └── sdkconfig.defaults*         # Optimized configs per chip target (C3, C5, C6, S3)
 ```
+

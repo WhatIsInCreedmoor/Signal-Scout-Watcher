@@ -1,6 +1,6 @@
-idf_component_register(SRCS "main.c"
+idf_component_register(SRCS "main.c" "provisioning.c"
                     INCLUDE_DIRS "."
-                    REQUIRES bt nvs_flash esp_driver_gpio esp_driver_uart driver esp_http_client mbedtls fatfs wear_levelling json esp_https_ota app_update)
+                    REQUIRES bt nvs_flash esp_driver_gpio esp_driver_uart driver esp_http_client mbedtls fatfs wear_levelling json esp_https_ota app_update esp_http_server esp_wifi esp_netif lwip)
 
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     API_ENDPOINT=\"$ENV{API_ENDPOINT}\"

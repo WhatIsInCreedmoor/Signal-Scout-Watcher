@@ -1,0 +1,277 @@
+name: Build & Release Watcher Firmware
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+      - '[0-9]*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Version or existing tag (e.g. 1.0.0 or v1.0.1; blank = unreleased semver tag or next patch)'
+        required: false
+        type: string
+        default: ''
+      publish_release:
+        description: 'Publish GitHub Release with factory-default and OTA .bin files'
+        required: false
+        type: boolean
+        default: true
+
+concurrency:
+  group: release-firmware-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Resolve Release Version
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.meta.outputs.ref }}
+      commit: ${{ steps.meta.outputs.commit }}
+      git_tag: ${{ steps.meta.outputs.git_tag }}
+      tag_exists: ${{ steps.meta.outputs.tag_exists }}
+      version: ${{ steps.meta.outputs.version }}
+      asset_prefix: ${{ steps.meta.outputs.asset_prefix }}
+      should_release: ${{ steps.meta.outputs.should_release }}
+    steps:
+      - name: Checkout Repository Tags
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve Ref, Version & Release Tag
+        id: meta
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          REQ_TAG: ${{ github.event.inputs.tag }}
+          PUBLISH_INPUT: ${{ github.event.inputs.publish_release }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import os, re, subprocess, sys
+
+          event = os.environ["EVENT_NAME"]
+          ref_type = os.environ["REF_TYPE"]
+          ref_name = os.environ["REF_NAME"]
+          req_tag = os.environ.get("REQ_TAG", "").strip()
+          publish_input = os.environ.get("PUBLISH_INPUT", "true").lower() == "true"
+          repo = os.environ["GH_REPO"]
+
+          SEMVER_RE = re.compile(r"^[vV]?(\d+)\.(\d+)\.(\d+)$")
+
+          def tag_exists(tag_name):
+              return subprocess.run(
+                  ["git", "rev-parse", "-q", "--verify", f"refs/tags/{tag_name}"],
+                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+              ).returncode == 0
+
+          def release_exists(tag_name):
+              return subprocess.run(
+                  ["gh", "release", "view", tag_name, "--repo", repo],
+                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+              ).returncode == 0
+
+          def latest_semver_tag():
+              out = subprocess.check_output(["git", "tag", "-l"], text=True)
+              found = []
+              for line in out.splitlines():
+                  t = line.strip()
+                  m = SEMVER_RE.match(t)
+                  if m:
+                      found.append(((int(m.group(1)), int(m.group(2)), int(m.group(3))), t))
+              if not found:
+                  return None
+              found.sort(key=lambda item: item[0], reverse=True)
+              return found[0]
+
+          if event == "push" and ref_type == "tag":
+              if not SEMVER_RE.match(ref_name):
+                  print(f"Error: Tag '{ref_name}' is not a valid semver version (expected e.g. 1.0.0 or v1.0.0).", file=sys.stderr)
+                  sys.exit(1)
+              version = ref_name.lstrip("vV")
+              ref = f"refs/tags/{ref_name}"
+              git_tag = ref_name
+              is_existing_tag = True
+              should_release = True
+          elif ref_type == "tag":
+              if not SEMVER_RE.match(ref_name):
+                  print(f"Error: Tag '{ref_name}' is not a valid semver version (expected e.g. 1.0.0 or v1.0.0).", file=sys.stderr)
+                  sys.exit(1)
+              version = ref_name.lstrip("vV")
+              ref = f"refs/tags/{ref_name}"
+              git_tag = ref_name
+              is_existing_tag = True
+              should_release = publish_input
+          elif req_tag:
+              if req_tag.lower() in {"master", "main", "head"} or not SEMVER_RE.match(req_tag):
+                  print(f"Error: Invalid version '{req_tag}'. Use semver like 1.0.0 or v1.0.0.", file=sys.stderr)
+                  sys.exit(1)
+              version = req_tag.lstrip("vV")
+              matched = next((cand for cand in (req_tag, version, f"v{version}") if tag_exists(cand)), None)
+              if matched:
+                  ref = f"refs/tags/{matched}"
+                  git_tag = matched
+                  is_existing_tag = True
+              else:
+                  ref = f"refs/heads/{ref_name}"
+                  git_tag = req_tag
+                  is_existing_tag = False
+              should_release = publish_input
+          else:
+              latest = latest_semver_tag()
+              if not publish_input:
+                  ref = f"refs/heads/{ref_name}"
+                  if latest:
+                      maj, min_, pat = latest[0]
+                      version = f"{maj}.{min_}.{pat + 1}"
+                  else:
+                      version = "1.0.0"
+                  git_tag = f"v{version}"
+                  is_existing_tag = False
+                  should_release = False
+              elif latest and not release_exists(latest[1]):
+                  version = latest[1].lstrip("vV")
+                  ref = f"refs/tags/{latest[1]}"
+                  git_tag = latest[1]
+                  is_existing_tag = True
+                  should_release = True
+              elif latest:
+                  maj, min_, pat = latest[0]
+                  version = f"{maj}.{min_}.{pat + 1}"
+                  ref = f"refs/heads/{ref_name}"
+                  git_tag = f"v{version}" if latest[1].lower().startswith("v") else version
+                  is_existing_tag = False
+                  should_release = True
+              else:
+                  version = "1.0.0"
+                  ref = f"refs/heads/{ref_name}"
+                  git_tag = "v1.0.0"
+                  is_existing_tag = False
+                  should_release = True
+
+          commit = subprocess.check_output(["git", "rev-parse", f"{ref}^{{commit}}"], text=True).strip()
+          asset_prefix = f"v{version}"
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"ref={ref}\n")
+              f.write(f"commit={commit}\n")
+              f.write(f"git_tag={git_tag}\n")
+              f.write(f"tag_exists={'true' if is_existing_tag else 'false'}\n")
+              f.write(f"version={version}\n")
+              f.write(f"asset_prefix={asset_prefix}\n")
+              f.write(f"should_release={'true' if should_release else 'false'}\n")
+
+          print(f"Resolved ref={ref} commit={commit[:7]} git_tag={git_tag} tag_exists={is_existing_tag} version={version} asset_prefix={asset_prefix} should_release={should_release}")
+          PY
+
+  build:
+    name: Build (${{ matrix.target }})
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [esp32c3, esp32c5, esp32c6, esp32s3]
+    container:
+      image: espressif/idf:release-v5.5
+    steps:
+      - name: Configure Git Safe Directory
+        run: git config --global --add safe.directory '*'
+
+      - name: Checkout Signal-Scout-Watcher
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          fetch-depth: 0
+
+      - name: Build Factory & OTA Binaries (${{ matrix.target }})
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          ASSET_PREFIX: ${{ needs.prepare.outputs.asset_prefix }}
+        run: |
+          set -eo pipefail
+          source "${IDF_PATH}/export.sh"
+          set -u
+          printf '%s\n' "${VERSION}" > version.txt
+          idf.py set-target "${TARGET}"
+          idf.py build
+          idf.py size
+          mkdir -p "${GITHUB_WORKSPACE}/dist"
+          FACTORY_BIN="${GITHUB_WORKSPACE}/dist/${ASSET_PREFIX}-${TARGET}-factory-default.bin"
+          OTA_BIN="${GITHUB_WORKSPACE}/dist/${ASSET_PREFIX}-${TARGET}-ota.bin"
+          (cd build && python -m esptool --chip "${TARGET}" merge_bin -o "${FACTORY_BIN}" @flash_args)
+          cp build/signal-scout-watcher.bin "${OTA_BIN}"
+
+      - name: Upload Target Binaries (${{ matrix.target }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ matrix.target }}
+          path: |
+            dist/${{ needs.prepare.outputs.asset_prefix }}-${{ matrix.target }}-factory-default.bin
+            dist/${{ needs.prepare.outputs.asset_prefix }}-${{ matrix.target }}-ota.bin
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: [prepare, build]
+    if: needs.prepare.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download All Target Binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: firmware-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create or Update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          GIT_TAG: ${{ needs.prepare.outputs.git_tag }}
+          TAG_EXISTS: ${{ needs.prepare.outputs.tag_exists }}
+          TARGET_COMMIT: ${{ needs.prepare.outputs.commit }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          ls -lh release-assets/
+          TITLE="Signal Scout Watcher ${VERSION}"
+          if gh release view "${GIT_TAG}" --repo "${GH_REPO}" >/dev/null 2>&1; then
+            gh release upload "${GIT_TAG}" release-assets/*.bin --repo "${GH_REPO}" --clobber
+            gh release edit "${GIT_TAG}" --repo "${GH_REPO}" --title "${TITLE}" --latest
+          elif [[ "${TAG_EXISTS}" == "true" ]]; then
+            gh release create "${GIT_TAG}" release-assets/*.bin \
+              --repo "${GH_REPO}" \
+              --title "${TITLE}" \
+              --latest \
+              --generate-notes
+          else
+            gh release create "${GIT_TAG}" release-assets/*.bin \
+              --repo "${GH_REPO}" \
+              --target "${TARGET_COMMIT}" \
+              --title "${TITLE}" \
+              --latest \
+              --generate-notes
+          fi
+
+      - name: Notify Signal-Scout-Web-Flasher (Optional)
+        env:
+          DISPATCH_TOKEN: ${{ secrets.WEB_FLASHER_DISPATCH_TOKEN }}
+        run: |
+          if [[ -n "${DISPATCH_TOKEN}" ]]; then
+            curl -fsSL -X POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${DISPATCH_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/WhatIsInCreedmoor/Signal-Scout-Web-Flasher/dispatches" \
+              -d "{\"event_type\":\"watcher-tag-updated\",\"client_payload\":{\"tag\":\"${{ needs.prepare.outputs.git_tag }}\"}}"
+          else
+            echo "WEB_FLASHER_DISPATCH_TOKEN secret not set; skipping instant webhook."
+          fi

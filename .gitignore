@@ -12,3 +12,6 @@ version.txt
 
 !device-secrets/*.example
 !nvs-partitions/*.example
+dist/
+staging/
+release-assets/

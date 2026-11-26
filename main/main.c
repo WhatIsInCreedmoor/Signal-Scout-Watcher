@@ -101,13 +101,18 @@ static void parse_networks(void) {
         return;
     }
 
-    char *save_pair, *save_kv;
+    char *save_pair;
     char *pair = strtok_r(creds, ";", &save_pair);
     while (pair && num_known_networks < MAX_NETWORKS) {
-        char *ssid = strtok_r(pair, ":", &save_kv);
-        char *pass = strtok_r(NULL, ":", &save_kv);
-        if (ssid && pass) {
-            pass[strcspn(pass, "\r\n")] = 0;
+        pair[strcspn(pair, "\r\n")] = 0;
+        char *colon = strchr(pair, ':');
+        const char *ssid = pair;
+        const char *pass = "";
+        if (colon) {
+            *colon = '\0';
+            pass = colon + 1;
+        }
+        if (ssid[0] != '\0') {
             known_networks[num_known_networks].ssid = strdup(ssid);
             known_networks[num_known_networks].password = strdup(pass);
             num_known_networks++;
@@ -141,6 +146,9 @@ static bool connect_to_known_wifi(void) {
         wifi_config_t wifi_config = {0};
         strlcpy((char *)wifi_config.sta.ssid, known_networks[i].ssid, sizeof(wifi_config.sta.ssid));
         strlcpy((char *)wifi_config.sta.password, known_networks[i].password, sizeof(wifi_config.sta.password));
+        if (known_networks[i].password[0] == '\0') {
+            wifi_config.sta.threshold.authmode = WIFI_AUTH_OPEN;
+        }
 
         wifi_config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
         wifi_config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;

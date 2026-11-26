@@ -43,7 +43,7 @@ When the portal opens in your browser at `http://192.168.4.1`:
    * **Auto-Populated:** The **Server Base URL** automatically pre-fills with any previously configured domain (e.g., `https://scout.example.com`).
    * **Customizable:** You can change this to any domain (e.g., `https://scout.example.com`).
    * **Auto-Normalization:** If you omit `https://`, the portal automatically prepends it and strips duplicate slashes.
-   * **Auto-Derived Endpoints:** The Ingest (`/api/targets/`), Heartbeat (`/api/heartbeat/`), and Definitions (`/api/definitions/`) endpoints are derived automatically. Expand **Advanced Endpoints** if you need to override individual paths.
+   * **Auto-Derived Endpoints:** The Ingest (`/api/ingest/`), Heartbeat (`/api/heartbeat/`), and Definitions (`/api/definitions/`) endpoints are derived automatically. Expand **Advanced Endpoints** if you need to override individual paths.
 
 ---
 

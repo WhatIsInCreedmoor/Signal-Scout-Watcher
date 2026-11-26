@@ -18,36 +18,42 @@ Edge sensor firmware for the [Signal Scout](https://github.com/WhatIsInCreedmoor
 
 ## Quick Start
 
-### 1. Build and Flash (Wireless SoftAP - Recommended)
-No environment variables, secrets files, or CSVs needed before flashing:
-```bash
-idf.py set-target <TARGET>   # esp32c3, esp32c5, esp32c6, or esp32s3
-idf.py build flash monitor -p /dev/ttyACM0
-```
-Connect to the `signal-scout-<mac>` Wi-Fi hotspot (Password: `signalscout`) to enter Wi-Fi credentials, API key, and server URL through the captive portal. See the **[Wireless SoftAP Provisioning Guide](documentation/ap_provisioning_instructions.md)** for details.
+By default, devices are configured **over Wi-Fi after flashing** using the built-in SoftAP captive portal (`signal-scout-<mac>`, password `signalscout`)—no secrets files or build-time environment variables are required. See the **[Wireless SoftAP Provisioning Guide](documentation/ap_provisioning_instructions.md)** for portal setup details.
 
-### 2. Alternative Flashing Methods
-* **[Environment Values / NVS Flashing Guide](documentation/flashing_instructions.md)** — Pre-provision secrets and server URLs via USB using `environment_secrets.sh` and `scripts/flash_nvs.sh`.
-* **[Hardware Encrypted Flashing Guide](documentation/encryption_instructions.md)** — Production provisioning covering eFuse key burning (`BLOCK_KEY0`), per-device NVS key generation, and pre-encrypted flashing.
+### 1. Unencrypted Flashing (Default)
+* **[Unencrypted Firmware Instructions](documentation/flashing_instructions.md)** — Build, flash, and monitor an unencrypted board (`esp32c3`, `esp32c5`, `esp32c6`, `esp32s3`, or `esp32`), then configure Wi-Fi, server URL, and API key via the SoftAP portal.
+
+### 2. Encrypted USB Flashing
+* **[Encrypted Firmware Instructions](documentation/encryption_instructions.md)** — Generate per-device keys (`scripts/generate_device_keys.sh`), burn `BLOCK_KEY0`, pre-encrypt and flash firmware + `nvs_keys` over USB, and enable hardware flash encryption eFuses before provisioning via the SoftAP portal.
+
+### 3. Optional: Manual NVS Flashing from a Secrets File
+If you prefer pre-provisioning Wi-Fi credentials and API keys from a file over USB instead of using the Wi-Fi portal:
+1. Copy `device-secrets/aa.bb.cc.dd.ee.ff.device_secrets.csv.example` to `device-secrets/<MAC>.device_secrets.csv` and fill in `api_key` and `wifi_creds`.
+2. For unencrypted boards, generate and flash the NVS partition directly:
+   ```bash
+   bash scripts/flash_nvs.sh
+   ```
+   *(For encrypted boards, encrypt the CSV with `nvs_partition_gen.py encrypt ... --inputkey keys/<MAC>.nvs_keys.bin` and flash it to `0x12000`.)*
 
 ## Project Structure
 
 ```text
 ├── CMakeLists.txt              # Project definition (signal-scout-watcher)
 ├── partitions.csv              # Custom partition table (NVS, OTA dual-boot, encrypted FAT)
-├── environment_secrets.sh      # Server API endpoints (git-ignored)
-├── device-secrets/             # Per-device CSV secrets: <MAC>.device_secrets.csv
+├── device-secrets/             # Optional per-device CSV secrets: <MAC>.device_secrets.csv
 ├── documentation/
-│   ├── ap_provisioning_instructions.md # Wireless SoftAP captive portal guide
-│   ├── flashing_instructions.md        # Standard unencrypted USB NVS guide
-│   └── encryption_instructions.md      # Hardware encryption & eFuse provisioning guide
+│   ├── ap_provisioning_instructions.md # Wireless SoftAP captive portal guide (default config)
+│   ├── flashing_instructions.md        # Unencrypted USB flashing guide
+│   └── encryption_instructions.md      # Hardware encryption & eFuse flashing guide
+├── keys/                       # Per-device flash & NVS encryption keys (git-ignored)
 ├── main/
 │   ├── CMakeLists.txt          # Main component build config
 │   └── main.c                  # Core sniffer, HTTP client, and state machine
 ├── nvs-partitions/             # Generated binary NVS partitions (git-ignored)
 ├── scripts/
-│   ├── flash_nvs.sh            # Auto-detects device MAC and flashes unencrypted NVS
-│   └── flash_encrypted_c3.sh   # Offline pre-encryption & flash script for ESP32-C3
-└── sdkconfig.defaults*         # Optimized configs per chip target (C3, C5, C6, S3)
+│   ├── generate_device_keys.sh # Reads MAC and generates flash & NVS encryption keys
+│   ├── flash_nvs.sh            # Optional: generates and flashes unencrypted NVS from CSV
+│   └── flash_encrypted.sh      # Reads MAC, verifies encryption, encrypts & flashes C3/C5/C6/S3
+└── sdkconfig.defaults*         # Optimized configs per chip target (C3, C5, C6, S3, ESP32)
 ```
 

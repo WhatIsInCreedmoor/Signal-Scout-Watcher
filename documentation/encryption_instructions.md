@@ -1,57 +1,88 @@
 # Encrypted Firmware Instructions
-The assumption throughout this flashing guide is that the device's MAC Address is used to identify the device. It is used to identify the device in Signal Scout and the scripts assume you're using a file with the mac address. As far as this project is concerned, the device-secrets file can be named any name that you desire. 
 
-The NVS partition is used to store secrets so that secrets don't need to be included in the firmware. The reason being is that OTA files can't be encrypted before being sent OTA. If someone accesses your OTA firmware, they'll have the ability to determine your API keys and WiFi credentials. These are moved to NVS, which is not part of the OTA files, so that they can't be sniffed mid flight. The tradeoff is that you must physically flash the device again to update API keys or WiFi credentials.
+Keys are named by each device's 6-byte MAC in dot format (`aa.bb.cc.dd.ee.ff`). Secrets (Wi-Fi, URLs, API key) are provisioned after flashing via the SoftAP Wi-Fi portal and stored encrypted in NVS (`nvs_keys` at `0x11000`), keeping them out of OTA firmware images.
 
-## 1. Find Your Device MAC Address
-Run:
-```bash
-esptool.py --port /dev/ttyACM0 read_mac
-```
-Use the 6-byte address (`MAC:` on C3/S3, or `BASE MAC:` on C5/C6) in dot format, e.g. `aa.bb.cc.dd.ee.ff`.
-
-## 2. Create Device Secrets & Keys (First Time Only)
-1. Create `device-secrets/<MAC>.device_secrets.csv` using `device-secrets/aa.bb.cc.dd.ee.ff.device_secrets.csv.example` as a template.
-2. Generate the NVS encryption key (writes into `keys/`):
-   ```bash
-   python "$IDF_PATH/components/nvs_flash/nvs_partition_generator/nvs_partition_gen.py" generate-key --keyfile <MAC>.nvs_keys.bin
-   ```
-3. Generate the flash encryption key and burn it to the chip (**never overwrite an already-burned chip**):
-   ```bash
-   espsecure.py generate_flash_encryption_key keys/<MAC>.flash-encryption.bin
-   espefuse.py --port /dev/ttyACM0 burn_key BLOCK_KEY0 keys/<MAC>.flash-encryption.bin XTS_AES_128_KEY
-   ```
-
-## 3. Build Firmware
-Set your target (`esp32c3`, `esp32c5`, `esp32c6`, or `esp32s3`), load `environment_secrets.sh`, and build:
-```bash
-idf.py fullclean && idf.py set-target <TARGET>
-source environment_secrets.sh && idf.py build
+## Prerequisites (`sdkconfig.defaults`)
+Uncomment these before building for encrypted devices (keep `CONFIG_SECURE_INSECURE_ALLOW_DL_MODE=y` enabled so USB flashing stays open; comment them back out for unencrypted builds):
+```ini
+CONFIG_SECURE_INSECURE_ALLOW_DL_MODE=y
+CONFIG_SECURE_FLASH_ENC_ENABLED=y
+CONFIG_SECURE_FLASH_ENCRYPTION_MODE_RELEASE=y
 ```
 
-## 4. Encrypt & Flash
-* **C3 script:**
-  ```bash
-  bash scripts/flash_encrypted_c3.sh <MAC>
-  ```
-* **Manual steps (other targets):**
-  1. Encrypt `device-secrets/<MAC>.device_secrets.csv` (`0x6000`) with `nvs_partition_gen.py encrypt ... --inputkey keys/<MAC>.nvs_keys.bin`.
-  2. Encrypt `bootloader.bin`, `partition-table.bin`, `keys/<MAC>.nvs_keys.bin`, `ota_data_initial.bin`, and `signal-scout-watcher.bin` with `espsecure.py encrypt_flash_data --aes_xts --keyfile keys/<MAC>.flash-encryption.bin --address <OFFSET> --output <OUT> <IN>`.
-  3. Flash all 5 encrypted files plus `device_nvs.bin` (`0x12000`) with `esptool.py --chip <TARGET> --port /dev/ttyACM0 --baud 460800 write_flash --force ...` (add `--no-stub` on `esp32c5`).
-
-## 5. Enable Encryption eFuses (First Time Only — Run After Flashing)
+Check if a plugged-in board is already encrypted:
 ```bash
-espefuse.py --port /dev/ttyACM0 burn_efuse SPI_BOOT_CRYPT_CNT 1 DIS_DOWNLOAD_MANUAL_ENCRYPT 1
+espefuse.py --port /dev/ttyACM0 summary | grep -E "Detecting chip|SPI_BOOT_CRYPT_CNT|DIS_DOWNLOAD_MANUAL_ENCRYPT|KEY_PURPOSE_0|DIS_DOWNLOAD_MODE|SECURE_BOOT_EN"
 ```
 
-## 6. Flash & Partition Offsets
-All targets share `partitions.csv`, `CONFIG_PARTITION_TABLE_OFFSET=0x10000`, and `--flash_mode dio --flash_freq 80m --flash_size 4MB`. Only `bootloader.bin` differs on `esp32c5`:
+---
 
-| Target | `bootloader.bin` | `partition-table.bin` | `nvs_keys` | `nvs` | `phy_init` | `ota_data_initial.bin` (`otadata`) | `signal-scout-watcher.bin` (`ota_0`) | `ota_1` | `storage` |
-|---|---|---|---|---|---|---|---|---|---|
-| `esp32c3` | `0x0` | `0x10000` | `0x11000` | `0x12000` | `0x18000` | `0x19000` | `0x20000` | `0x1d0000` | `0x379000` |
-| `esp32c5` | **`0x2000`** | `0x10000` | `0x11000` | `0x12000` | `0x18000` | `0x19000` | `0x20000` | `0x1d0000` | `0x379000` |
-| `esp32c6` | `0x0` | `0x10000` | `0x11000` | `0x12000` | `0x18000` | `0x19000` | `0x20000` | `0x1d0000` | `0x379000` |
-| `esp32s3` | `0x0` | `0x10000` | `0x11000` | `0x12000` | `0x18000` | `0x19000` | `0x20000` | `0x1d0000` | `0x379000` |
+## First-Time Setup (New C3, C5, C6, or S3)
 
-*Sizes: `nvs_keys` `4K`, `nvs` `24K` (`0x6000`), `phy_init` `4K`, `otadata` `8K` (`0x2000`), `ota_0` `1700K`, `ota_1` `1700K`, `storage` `500K`.*
+**C3, C6, and S3** use `BOOT_ADDR=0x0`. **C5** uses `BOOT_ADDR=0x2000`.
+
+### 1. Set Environment Variables
+```bash
+TARGET="esp32s3"   # esp32c3, esp32c5, esp32c6, or esp32s3
+BOOT_ADDR="0x0"    # 0x2000 for esp32c5; 0x0 for esp32c3, esp32c6, esp32s3
+PORT="/dev/ttyACM0"
+```
+
+### 2. Set Target, Erase Flash & Generate Keys
+```bash
+idf.py fullclean && idf.py set-target "$TARGET"
+idf.py erase-flash -p "$PORT"
+bash scripts/generate_device_keys.sh "$PORT"
+```
+
+### 3. Burn Flash Key to eFuse (One-Time Only)
+Set `MAC` from the script output above (dot format):
+```bash
+MAC="<aa.bb.cc.dd.ee.ff>"
+KEY="keys/${MAC}.flash-encryption.bin"
+
+espefuse.py --port "$PORT" burn_key BLOCK_KEY0 "$KEY" XTS_AES_128_KEY
+```
+
+### 4. Build Firmware
+```bash
+idf.py build
+```
+
+### 5. Encrypt Build Artifacts Offline
+```bash
+espsecure.py encrypt_flash_data --aes_xts --keyfile "$KEY" --address "$BOOT_ADDR" --output build/bootloader/bootloader-enc.bin          build/bootloader/bootloader.bin
+espsecure.py encrypt_flash_data --aes_xts --keyfile "$KEY" --address 0x10000      --output build/partition_table/partition-table-enc.bin build/partition_table/partition-table.bin
+espsecure.py encrypt_flash_data --aes_xts --keyfile "$KEY" --address 0x11000      --output build/encrypted_nvs_keys.bin                  "keys/${MAC}.nvs_keys.bin"
+espsecure.py encrypt_flash_data --aes_xts --keyfile "$KEY" --address 0x19000      --output build/ota_data_initial-enc.bin                build/ota_data_initial.bin
+espsecure.py encrypt_flash_data --aes_xts --keyfile "$KEY" --address 0x20000      --output build/app-enc.bin                             build/signal-scout-watcher.bin
+```
+
+### 6. Flash Pre-Encrypted Images
+*(Add `--no-stub` before `write_flash` on `esp32c5` if the stub fails.)*
+```bash
+esptool.py --chip "$TARGET" --port "$PORT" --baud 460800 --after no_reset write_flash --force \
+    "$BOOT_ADDR" build/bootloader/bootloader-enc.bin \
+    0x10000      build/partition_table/partition-table-enc.bin \
+    0x11000      build/encrypted_nvs_keys.bin \
+    0x19000      build/ota_data_initial-enc.bin \
+    0x20000      build/app-enc.bin
+```
+
+### 7. Enable Encryption eFuses (One-Time — Only After Step 6) & Monitor
+```bash
+espefuse.py --port "$PORT" burn_efuse SPI_BOOT_CRYPT_CNT 1 DIS_DOWNLOAD_MANUAL_ENCRYPT 1
+idf.py monitor -p "$PORT"
+```
+
+After first boot, connect to `signal-scout-<mac>` (password `signalscout`) to provision Wi-Fi, URLs, and auth key into encrypted NVS.
+
+### 8. OTA Updates
+Once encrypted, all future firmware updates can be done via OTA. Upload an unencrypted firmware to the dashboard, enable OTA updates, and then the running device encrypts the incoming app image automatically as it writes to the inactive OTA partition.
+
+---
+
+## Reflashing Over USB (Already-Encrypted Device)
+- **Never** re-run `generate_device_keys.sh` for a flash key, Step 3 (`burn_key`), Step 7 (`burn_efuse`), or `idf.py flash` without pre-encrypting the firmware.
+- **Keep existing NVS:** Set `TARGET`, `BOOT_ADDR`, `PORT`, `MAC`, and `KEY`, then run Steps 4, 5, and 6 (omit `0x11000` and `--after no_reset`, and do not `erase-flash`).
+- **Full wipe / partition migration:** Set those variables, run `esptool.py --chip "$TARGET" --port "$PORT" erase_flash --force`, then run Steps 4, 5, and 6 (including `0x11000`, without `--after no_reset`).

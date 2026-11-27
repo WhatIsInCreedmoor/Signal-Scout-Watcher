@@ -1,0 +1,17 @@
+# Classic ESP32 has only 128 KB static IRAM; disable IRAM placement options from sdkconfig.defaults
+CONFIG_ESP_WIFI_IRAM_OPT=n
+CONFIG_ESP_WIFI_RX_IRAM_OPT=n
+CONFIG_LWIP_IRAM_OPTIMIZATION=n
+
+# Classic ESP32 BLE controller (uses CONFIG_BTDM_* instead of CONFIG_BT_CTRL_* / CONFIG_BT_LE_*)
+CONFIG_BTDM_CTRL_MODE_BLE_ONLY=y
+CONFIG_BTDM_SCAN_DUPL_TYPE_DATA_DEVICE=y
+CONFIG_BTDM_SCAN_DUPL_CACHE_SIZE=200
+CONFIG_BTDM_SCAN_DUPL_CACHE_REFRESH_PERIOD=10
+
+# Pin BLE controller and NimBLE host to Core 1 (leave Core 0 for Wi-Fi)
+CONFIG_BTDM_CTRL_PINNED_TO_CORE_1=y
+CONFIG_BT_NIMBLE_PINNED_TO_CORE_1=y
+
+# Uncomment only if a specific WROOM-32 module fails to boot with QIO
+#CONFIG_ESPTOOLPY_FLASHMODE_DIO=y

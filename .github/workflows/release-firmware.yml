@@ -175,7 +175,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [esp32c3, esp32c5, esp32c6, esp32s3]
+        target: [esp32, esp32c3, esp32c5, esp32c6, esp32s3]
     container:
       image: espressif/idf:release-v5.5
     steps:
